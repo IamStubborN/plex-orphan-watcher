@@ -49,6 +49,7 @@ func (scheduler *Scheduler) Run(ctx context.Context) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	pending := make(map[string]candidate)
+	completed := make(map[string]time.Time)
 
 	for {
 		select {
@@ -56,6 +57,9 @@ func (scheduler *Scheduler) Run(ctx context.Context) error {
 			return nil
 		case path := <-scheduler.incoming:
 			now := time.Now()
+			if until, exists := completed[path]; exists && now.Before(until) {
+				continue
+			}
 			item, exists := pending[path]
 			if !exists {
 				item.firstSeen = now
@@ -64,6 +68,11 @@ func (scheduler *Scheduler) Run(ctx context.Context) error {
 			pending[path] = item
 			scheduler.logger.Info("candidate scheduled", "path", path, "delay", scheduler.delay)
 		case now := <-ticker.C:
+			for path, until := range completed {
+				if !now.Before(until) {
+					delete(completed, path)
+				}
+			}
 			for path, item := range pending {
 				if now.Before(item.due) {
 					continue
@@ -82,6 +91,7 @@ func (scheduler *Scheduler) Run(ctx context.Context) error {
 				}
 				scheduler.logger.Info("candidate check completed", "path", path, "status", result.Status)
 				delete(pending, path)
+				completed[path] = now.Add(scheduler.delay)
 			}
 		}
 	}

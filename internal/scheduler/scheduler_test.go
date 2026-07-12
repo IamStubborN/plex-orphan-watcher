@@ -66,6 +66,23 @@ func TestSchedulerDebouncesRepeatedEvents(t *testing.T) {
 	}
 }
 
+func TestSchedulerIgnoresEventsImmediatelyAfterCompletion(t *testing.T) {
+	evaluator := &fakeEvaluator{}
+	scheduler := New(40*time.Millisecond, 10*time.Millisecond, time.Second, evaluator, discardLogger())
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = scheduler.Run(ctx) }()
+
+	scheduler.Enqueue("/data/tv/Show")
+	waitForCalls(t, evaluator, 1)
+	scheduler.Enqueue("/data/tv/Show")
+	time.Sleep(30 * time.Millisecond)
+
+	if got := evaluator.callCount(); got != 1 {
+		t.Fatalf("calls = %d, want 1 during completion cooldown", got)
+	}
+}
+
 func waitForCalls(t *testing.T, evaluator *fakeEvaluator, want int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
