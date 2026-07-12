@@ -1,0 +1,21 @@
+services:
+  plex-orphan-watcher:
+    build: .
+    restart: unless-stopped
+    environment:
+      WATCH_ROOTS: /data/internal/media/tv,/data/internal/torrents/tv,/data/usb_drive/media/tv,/data/usb_drive/torrents/tv
+      PLEX_DATABASE: /plex/com.plexapp.plugins.library.db
+      QBITTORRENT_URL: http://qbittorrent:8400
+      QBITTORRENT_USER: ""
+      QBITTORRENT_PASSWORD: ""
+      DRY_RUN: "true"
+      DELETE_DELAY: 30s
+      RETRY_INTERVAL: 30s
+      MAX_RETRY_AGE: 10m
+      HEALTH_ADDRESS: :8080
+    volumes:
+      - /path/to/plex/Databases:/plex:ro
+      - /mnt/internal/media/tv:/data/internal/media/tv:rw
+      - /mnt/internal/torrents/tv:/data/internal/torrents/tv:rw
+      - /mnt/usb_drive/media/tv:/data/usb_drive/media/tv:rw
+      - /mnt/usb_drive/torrents/tv:/data/usb_drive/torrents/tv:rw
