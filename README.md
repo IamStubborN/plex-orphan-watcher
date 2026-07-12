@@ -14,12 +14,12 @@ A directory is removed only when every check succeeds:
 
 1. A file removal or rename event occurred below a configured TV root.
 2. The candidate is a real directory directly below that root.
-3. Plex SQLite has no indexed media path inside the candidate.
+3. The authenticated Plex API reports no indexed media path inside the candidate.
 4. No primary video remains outside a known extras directory.
 5. qBittorrent does not manage the candidate path.
 6. `DRY_RUN` is explicitly set to `false`.
 
-Dependency failures are fail-closed. If Plex SQLite or qBittorrent cannot be
+Dependency failures are fail-closed. If the Plex API or qBittorrent cannot be
 queried, the watcher keeps the directory and retries for `MAX_RETRY_AGE`.
 
 Deleting one episode or one season does not remove the show directory while
@@ -30,7 +30,8 @@ Plex still indexes any media below it.
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
 | `WATCH_ROOTS` | yes | - | Comma-separated TV library roots using the same paths as Plex and qBittorrent. |
-| `PLEX_DATABASE` | yes | - | Path to `com.plexapp.plugins.library.db`. Mount its parent directory read-only so SQLite can also read WAL files. |
+| `PLEX_URL` | yes | - | Plex Media Server base URL, for example `http://plex:32400`. |
+| `PLEX_TOKEN_FILE` | yes | - | Path to a file containing a Plex authentication token. |
 | `QBITTORRENT_URL` | yes | - | qBittorrent Web API base URL. |
 | `QBITTORRENT_USER` | no | empty | Web API username. |
 | `QBITTORRENT_PASSWORD` | no | empty | Web API password. |
@@ -42,8 +43,8 @@ Plex still indexes any media below it.
 
 ## Docker
 
-Copy `compose.example.yaml`, replace the Plex database path, and start in
-dry-run mode:
+Copy `compose.example.yaml`, provide the Plex token secret, and start in dry-run
+mode:
 
 ```bash
 docker compose up -d --build

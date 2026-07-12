@@ -2,7 +2,6 @@ package integration
 
 import (
 	"context"
-	"database/sql"
 	"io"
 	"log/slog"
 	"net/http"
@@ -17,7 +16,6 @@ import (
 	"github.com/IamStubborN/plex-orphan-watcher/internal/qbittorrent"
 	"github.com/IamStubborN/plex-orphan-watcher/internal/scheduler"
 	watcher "github.com/IamStubborN/plex-orphan-watcher/internal/watch"
-	_ "modernc.org/sqlite"
 )
 
 func TestRemovedLastEpisodeDeletesOnlyOrphanedShowDirectory(t *testing.T) {
@@ -34,29 +32,21 @@ func TestRemovedLastEpisodeDeletesOnlyOrphanedShowDirectory(t *testing.T) {
 		}
 	}
 
-	databasePath := filepath.Join(t.TempDir(), "plex.db")
-	db, err := sql.Open("sqlite", databasePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`CREATE TABLE media_parts (file TEXT NOT NULL)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO media_parts(file) VALUES (?)`, episode); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`DELETE FROM media_parts WHERE file = ?`, episode); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	repository, err := plex.Open(databasePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = repository.Close() })
+	plexServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("X-Plex-Token") != "secret" {
+			http.Error(response, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		switch request.URL.Path {
+		case "/library/sections":
+			_, _ = io.WriteString(response, `{"MediaContainer":{"Directory":[{"key":"2","type":"show"}]}}`)
+		case "/library/sections/2/all":
+			_, _ = io.WriteString(response, `{"MediaContainer":{"totalSize":0,"size":0,"Metadata":[]}}`)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	t.Cleanup(plexServer.Close)
 	qbit := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/api/v2/torrents/info" {
 			http.NotFound(response, request)
@@ -67,7 +57,7 @@ func TestRemovedLastEpisodeDeletesOnlyOrphanedShowDirectory(t *testing.T) {
 	t.Cleanup(qbit.Close)
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	evaluator := cleanup.New([]string{root}, repository, qbittorrent.New(qbit.URL, "", ""), false)
+	evaluator := cleanup.New([]string{root}, plex.New(plexServer.URL, "secret"), qbittorrent.New(qbit.URL, "", ""), false)
 	queue := scheduler.New(20*time.Millisecond, 20*time.Millisecond, time.Second, evaluator, logger)
 	filesystemWatcher, err := watcher.NewRecursive([]string{root}, queue.Enqueue)
 	if err != nil {

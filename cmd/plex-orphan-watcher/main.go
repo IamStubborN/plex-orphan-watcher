@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/IamStubborN/plex-orphan-watcher/internal/cleanup"
@@ -32,18 +33,21 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("load configuration: %w", err)
 	}
 
-	repository, err := plex.Open(settings.PlexDatabase)
+	token, err := os.ReadFile(settings.PlexTokenFile)
 	if err != nil {
-		return err
+		return fmt.Errorf("read Plex token file: %w", err)
 	}
-	defer repository.Close()
+	if len(strings.TrimSpace(string(token))) == 0 {
+		return fmt.Errorf("Plex token file is empty")
+	}
+	plexClient := plex.New(settings.PlexURL, string(token))
 
 	torrents := qbittorrent.New(
 		settings.QBittorrentURL,
 		settings.QBittorrentUser,
 		settings.QBittorrentPassword,
 	)
-	evaluator := cleanup.New(settings.WatchRoots, repository, torrents, settings.DryRun)
+	evaluator := cleanup.New(settings.WatchRoots, plexClient, torrents, settings.DryRun)
 	queue := scheduler.New(
 		settings.DeleteDelay,
 		settings.RetryInterval,

@@ -9,7 +9,8 @@ import (
 
 type Config struct {
 	WatchRoots          []string
-	PlexDatabase        string
+	PlexURL             string
+	PlexTokenFile       string
 	QBittorrentURL      string
 	QBittorrentUser     string
 	QBittorrentPassword string
@@ -22,7 +23,8 @@ type Config struct {
 
 func Load(getenv func(string) string) (Config, error) {
 	config := Config{
-		PlexDatabase:        strings.TrimSpace(getenv("PLEX_DATABASE")),
+		PlexURL:             strings.TrimSpace(getenv("PLEX_URL")),
+		PlexTokenFile:       strings.TrimSpace(getenv("PLEX_TOKEN_FILE")),
 		QBittorrentURL:      strings.TrimSpace(getenv("QBITTORRENT_URL")),
 		QBittorrentUser:     getenv("QBITTORRENT_USER"),
 		QBittorrentPassword: getenv("QBITTORRENT_PASSWORD"),
@@ -36,8 +38,11 @@ func Load(getenv func(string) string) (Config, error) {
 	if len(config.WatchRoots) == 0 {
 		return Config{}, fmt.Errorf("WATCH_ROOTS is required")
 	}
-	if config.PlexDatabase == "" {
-		return Config{}, fmt.Errorf("PLEX_DATABASE is required")
+	if config.PlexURL == "" {
+		return Config{}, fmt.Errorf("PLEX_URL is required")
+	}
+	if config.PlexTokenFile == "" {
+		return Config{}, fmt.Errorf("PLEX_TOKEN_FILE is required")
 	}
 	if config.QBittorrentURL == "" {
 		return Config{}, fmt.Errorf("QBITTORRENT_URL is required")

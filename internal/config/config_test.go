@@ -8,7 +8,8 @@ import (
 func TestLoadAppliesSafeDefaults(t *testing.T) {
 	values := map[string]string{
 		"WATCH_ROOTS":          "/data/internal/torrents/tv, /data/usb_drive/torrents/tv",
-		"PLEX_DATABASE":        "/plex/com.plexapp.plugins.library.db",
+		"PLEX_URL":             "http://plex:32400",
+		"PLEX_TOKEN_FILE":      "/run/secrets/plex_token",
 		"QBITTORRENT_URL":      "http://gluetun:8400",
 		"QBITTORRENT_USER":     "user",
 		"QBITTORRENT_PASSWORD": "secret",
@@ -39,7 +40,8 @@ func TestLoadRejectsMissingRequiredValues(t *testing.T) {
 func TestLoadRejectsInvalidBoolean(t *testing.T) {
 	values := map[string]string{
 		"WATCH_ROOTS":     "/data/tv",
-		"PLEX_DATABASE":   "/plex/plex.db",
+		"PLEX_URL":        "http://plex:32400",
+		"PLEX_TOKEN_FILE": "/run/secrets/plex_token",
 		"QBITTORRENT_URL": "http://qbittorrent:8400",
 		"DRY_RUN":         "sometimes",
 	}
