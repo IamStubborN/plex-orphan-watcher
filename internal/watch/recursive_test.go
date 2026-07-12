@@ -45,3 +45,33 @@ func TestRecursiveWatcherEmitsTopLevelCandidateOnFileRemoval(t *testing.T) {
 		t.Fatal("timed out waiting for removal event")
 	}
 }
+
+func TestRecursiveWatcherIgnoresCandidateThatNoLongerExists(t *testing.T) {
+	root := t.TempDir()
+	show := filepath.Join(root, "Show")
+	if err := os.Mkdir(show, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	candidates := make(chan string, 1)
+	watcher, err := NewRecursive([]string{root}, func(candidate string) {
+		candidates <- candidate
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = watcher.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = watcher.Run(ctx) }()
+
+	if err := os.Remove(show); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case candidate := <-candidates:
+		t.Fatalf("unexpected missing candidate: %q", candidate)
+	case <-time.After(200 * time.Millisecond):
+	}
+}

@@ -69,7 +69,10 @@ func (watcher *Recursive) Run(ctx context.Context) error {
 			}
 			for _, root := range watcher.roots {
 				if candidate, valid := pathguard.CandidateFromEvent(root, event.Name); valid {
-					watcher.handler(candidate)
+					info, err := os.Lstat(candidate)
+					if err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+						watcher.handler(candidate)
+					}
 					break
 				}
 			}
