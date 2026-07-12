@@ -122,6 +122,6 @@ func writeJSON(t *testing.T, response http.ResponseWriter, value any) {
 	t.Helper()
 	response.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(response).Encode(value); err != nil {
-		t.Fatal(err)
+		t.Errorf("encode HTTP fixture: %v", err)
 	}
 }

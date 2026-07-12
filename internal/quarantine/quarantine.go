@@ -23,6 +23,12 @@ func Move(candidate string, now time.Time) (string, error) {
 	if err := os.Rename(candidate, target); err != nil {
 		return "", fmt.Errorf("move candidate %q to quarantine: %w", candidate, err)
 	}
+	if err := os.Chtimes(target, now, now); err != nil {
+		if rollbackErr := os.Rename(target, candidate); rollbackErr != nil {
+			return "", fmt.Errorf("set quarantine retention timestamp: %w (rollback failed: %v)", err, rollbackErr)
+		}
+		return "", fmt.Errorf("set quarantine retention timestamp: %w", err)
+	}
 	return target, nil
 }
 
