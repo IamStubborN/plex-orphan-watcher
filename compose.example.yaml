@@ -13,6 +13,7 @@ services:
       DELETE_DELAY: 30s
       RETRY_INTERVAL: 30s
       MAX_RETRY_AGE: 10m
+      QUARANTINE_RETENTION: 168h
       HEALTH_ADDRESS: :8080
     volumes:
       - /mnt/internal/media/tv:/data/internal/media/tv:rw

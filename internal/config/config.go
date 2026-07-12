@@ -18,6 +18,7 @@ type Config struct {
 	DeleteDelay         time.Duration
 	RetryInterval       time.Duration
 	MaxRetryAge         time.Duration
+	QuarantineRetention time.Duration
 	HealthAddress       string
 }
 
@@ -59,6 +60,9 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	if config.MaxRetryAge, err = parseDuration(getenv("MAX_RETRY_AGE"), 10*time.Minute, "MAX_RETRY_AGE"); err != nil {
+		return Config{}, err
+	}
+	if config.QuarantineRetention, err = parseDuration(getenv("QUARANTINE_RETENTION"), 7*24*time.Hour, "QUARANTINE_RETENTION"); err != nil {
 		return Config{}, err
 	}
 	return config, nil

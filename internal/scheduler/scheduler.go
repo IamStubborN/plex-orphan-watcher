@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/IamStubborN/plex-orphan-watcher/internal/cleanup"
@@ -18,7 +19,9 @@ type Scheduler struct {
 	maxAge    time.Duration
 	evaluator Evaluator
 	logger    *slog.Logger
-	incoming  chan string
+	mu        sync.Mutex
+	queued    map[string]struct{}
+	wake      chan struct{}
 }
 
 type candidate struct {
@@ -33,12 +36,19 @@ func New(delay, retry, maxAge time.Duration, evaluator Evaluator, logger *slog.L
 		maxAge:    maxAge,
 		evaluator: evaluator,
 		logger:    logger,
-		incoming:  make(chan string, 1024),
+		queued:    make(map[string]struct{}),
+		wake:      make(chan struct{}, 1),
 	}
 }
 
 func (scheduler *Scheduler) Enqueue(path string) {
-	scheduler.incoming <- path
+	scheduler.mu.Lock()
+	scheduler.queued[path] = struct{}{}
+	scheduler.mu.Unlock()
+	select {
+	case scheduler.wake <- struct{}{}:
+	default:
+	}
 }
 
 func (scheduler *Scheduler) Run(ctx context.Context) error {
@@ -55,18 +65,20 @@ func (scheduler *Scheduler) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
-		case path := <-scheduler.incoming:
+		case <-scheduler.wake:
 			now := time.Now()
-			if until, exists := completed[path]; exists && now.Before(until) {
-				continue
+			for _, path := range scheduler.drain() {
+				if until, exists := completed[path]; exists && now.Before(until) {
+					continue
+				}
+				item, exists := pending[path]
+				if !exists {
+					item.firstSeen = now
+				}
+				item.due = now.Add(scheduler.delay)
+				pending[path] = item
+				scheduler.logger.Info("candidate scheduled", "path", path, "delay", scheduler.delay)
 			}
-			item, exists := pending[path]
-			if !exists {
-				item.firstSeen = now
-			}
-			item.due = now.Add(scheduler.delay)
-			pending[path] = item
-			scheduler.logger.Info("candidate scheduled", "path", path, "delay", scheduler.delay)
 		case now := <-ticker.C:
 			for path, until := range completed {
 				if !now.Before(until) {
@@ -89,12 +101,23 @@ func (scheduler *Scheduler) Run(ctx context.Context) error {
 					delete(pending, path)
 					continue
 				}
-				scheduler.logger.Info("candidate check completed", "path", path, "status", result.Status)
+				scheduler.logger.Info("candidate check completed", "path", path, "status", result.Status, "result_path", result.Path)
 				delete(pending, path)
 				completed[path] = now.Add(scheduler.delay)
 			}
 		}
 	}
+}
+
+func (scheduler *Scheduler) drain() []string {
+	scheduler.mu.Lock()
+	defer scheduler.mu.Unlock()
+	paths := make([]string, 0, len(scheduler.queued))
+	for path := range scheduler.queued {
+		paths = append(paths, path)
+		delete(scheduler.queued, path)
+	}
+	return paths
 }
 
 func minDuration(values ...time.Duration) time.Duration {

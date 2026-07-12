@@ -70,6 +70,46 @@ func TestCountMediaUnderFailsClosedOnPlexError(t *testing.T) {
 	}
 }
 
+func TestCountMediaUnderHandlesServerPageCap(t *testing.T) {
+	var starts []int
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/library/sections":
+			writeJSON(t, response, map[string]any{"MediaContainer": map[string]any{"Directory": []any{
+				map[string]any{"key": "2", "type": "show"},
+			}}})
+		case "/library/sections/2/all":
+			start, _ := strconv.Atoi(request.URL.Query().Get("X-Plex-Container-Start"))
+			starts = append(starts, start)
+			pages := map[int][]any{
+				0: {metadataWithFiles("/data/tv/Other/Season 01/Other - S01E01.mkv")},
+				1: {metadataWithFiles("/data/tv/Show/Season 01/Show - S01E01.mkv")},
+			}
+			writeJSON(t, response, map[string]any{"MediaContainer": map[string]any{
+				"totalSize": 2,
+				"size":      len(pages[start]),
+				"Metadata":  pages[start],
+			}})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := New(server.URL, "secret")
+	client.pageSize = 200
+	count, err := client.CountMediaUnder(context.Background(), "/data/tv/Show")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("count = %d, want 1", count)
+	}
+	if !reflect.DeepEqual(starts, []int{0, 1}) {
+		t.Fatalf("page starts = %v, want [0 1]", starts)
+	}
+}
+
 func metadataWithFiles(files ...string) map[string]any {
 	parts := make([]any, 0, len(files))
 	for _, file := range files {

@@ -7,23 +7,27 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/IamStubborN/plex-orphan-watcher/internal/media"
+	"github.com/IamStubborN/plex-orphan-watcher/internal/quarantine"
 )
 
 type Status string
 
 const (
-	Deleted             Status = "deleted"
-	DryRun              Status = "dry_run"
-	Missing             Status = "missing"
-	BlockedPlex         Status = "blocked_plex"
-	BlockedPrimaryVideo Status = "blocked_primary_video"
-	BlockedTorrent      Status = "blocked_torrent"
+	Deleted        Status = "deleted"
+	Quarantined    Status = "quarantined"
+	DryRun         Status = "dry_run"
+	Missing        Status = "missing"
+	BlockedPlex    Status = "blocked_plex"
+	BlockedVideo   Status = "blocked_video"
+	BlockedTorrent Status = "blocked_torrent"
 )
 
 type Result struct {
 	Status Status
+	Path   string
 }
 
 type Plex interface {
@@ -80,16 +84,17 @@ func (evaluator *Evaluator) Evaluate(ctx context.Context, candidate string) (Res
 		return Result{Status: DryRun}, nil
 	}
 
-	// Repeat all dynamic checks immediately before deletion. Plex scans,
+	// Repeat all dynamic checks immediately before quarantine. Plex scans,
 	// downloads, and file copies can race with the initial evaluation.
 	result, err = evaluator.checkGuards(ctx, candidate)
 	if err != nil || result.Status != "" {
 		return result, err
 	}
-	if err := os.RemoveAll(candidate); err != nil {
-		return Result{}, fmt.Errorf("remove candidate %q: %w", candidate, err)
+	quarantinePath, err := quarantine.Move(candidate, time.Now())
+	if err != nil {
+		return Result{}, err
 	}
-	return Result{Status: Deleted}, nil
+	return Result{Status: Quarantined, Path: quarantinePath}, nil
 }
 
 func (evaluator *Evaluator) checkGuards(ctx context.Context, candidate string) (Result, error) {
@@ -101,12 +106,12 @@ func (evaluator *Evaluator) checkGuards(ctx context.Context, candidate string) (
 		return Result{Status: BlockedPlex}, nil
 	}
 
-	hasPrimaryVideo, err := media.HasPrimaryVideo(candidate)
+	hasVideo, err := media.HasVideo(candidate)
 	if err != nil {
 		return Result{}, fmt.Errorf("scan candidate %q: %w", candidate, err)
 	}
-	if hasPrimaryVideo {
-		return Result{Status: BlockedPrimaryVideo}, nil
+	if hasVideo {
+		return Result{Status: BlockedVideo}, nil
 	}
 
 	managed, err := evaluator.torrents.Managed(ctx, candidate)

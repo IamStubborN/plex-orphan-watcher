@@ -18,12 +18,12 @@ import (
 	watcher "github.com/IamStubborN/plex-orphan-watcher/internal/watch"
 )
 
-func TestRemovedLastEpisodeDeletesOnlyOrphanedShowDirectory(t *testing.T) {
+func TestRemovedLastEpisodeQuarantinesOnlyOrphanedShowDirectory(t *testing.T) {
 	root := t.TempDir()
 	show := filepath.Join(root, "Show")
 	episode := filepath.Join(show, "Season 01", "Show - S01E01.mkv")
-	extra := filepath.Join(show, "Season 01", "Extra", "NCOP.mkv")
-	for _, file := range []string{episode, extra} {
+	subtitle := filepath.Join(show, "Season 01", "Show - S01E01.ru.ass")
+	for _, file := range []string{episode, subtitle} {
 		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -77,9 +77,15 @@ func TestRemovedLastEpisodeDeletesOnlyOrphanedShowDirectory(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(show); os.IsNotExist(err) {
-			return
+			matches, globErr := filepath.Glob(filepath.Join(root, ".plex-orphan-quarantine", "*-Show"))
+			if globErr != nil {
+				t.Fatal(globErr)
+			}
+			if len(matches) == 1 {
+				return
+			}
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatal("orphaned show directory was not deleted")
+	t.Fatal("orphaned show directory was not quarantined")
 }

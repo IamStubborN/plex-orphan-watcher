@@ -26,7 +26,7 @@ func TestLoadAppliesSafeDefaults(t *testing.T) {
 	if !config.DryRun {
 		t.Fatal("DRY_RUN must default to true")
 	}
-	if config.DeleteDelay != 30*time.Second || config.RetryInterval != 30*time.Second || config.MaxRetryAge != 10*time.Minute {
+	if config.DeleteDelay != 30*time.Second || config.RetryInterval != 30*time.Second || config.MaxRetryAge != 10*time.Minute || config.QuarantineRetention != 7*24*time.Hour {
 		t.Fatalf("unexpected duration defaults: %+v", config)
 	}
 }

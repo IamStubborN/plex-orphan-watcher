@@ -1,9 +1,8 @@
 # Plex Orphan Watcher
 
-Plex Orphan Watcher removes leftover TV show directories after Plex deletes
-the last indexed episode. It is designed for folders that still contain
-external subtitles, NCOP/NCED videos, trailers, or other extras that Plex does
-not delete with the main media.
+Plex Orphan Watcher quarantines leftover TV show directories after Plex deletes
+the last indexed episode. Directories containing any video file, including
+extras and trailers, are always retained.
 
 The watcher is event-driven. It does not scan and delete pre-existing orphan
 directories on startup.
@@ -15,9 +14,12 @@ A directory is removed only when every check succeeds:
 1. A file removal or rename event occurred below a configured TV root.
 2. The candidate is a real directory directly below that root.
 3. The authenticated Plex API reports no indexed media path inside the candidate.
-4. No primary video remains outside a known extras directory.
+4. No video file remains anywhere inside the candidate.
 5. qBittorrent does not manage the candidate path.
 6. `DRY_RUN` is explicitly set to `false`.
+
+Eligible directories are atomically moved to `.plex-orphan-quarantine` inside
+the same TV root. They are permanently removed after `QUARANTINE_RETENTION`.
 
 Dependency failures are fail-closed. If the Plex API or qBittorrent cannot be
 queried, the watcher keeps the directory and retries for `MAX_RETRY_AGE`.
@@ -39,7 +41,11 @@ Plex still indexes any media below it.
 | `DELETE_DELAY` | no | `30s` | Quiet period after the last filesystem event. |
 | `RETRY_INTERVAL` | no | `30s` | Delay between transient Plex/API retries. |
 | `MAX_RETRY_AGE` | no | `10m` | Maximum retry window for a candidate. |
+| `QUARANTINE_RETENTION` | no | `168h` | Time to retain quarantined directories before permanent removal. |
 | `HEALTH_ADDRESS` | no | `:8080` | Health endpoint listen address. |
+
+`/healthz` reports process liveness. `/readyz` additionally verifies every TV
+root and connectivity to Plex and qBittorrent.
 
 ## Docker
 

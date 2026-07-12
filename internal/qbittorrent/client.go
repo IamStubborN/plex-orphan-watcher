@@ -75,6 +75,11 @@ func (client *Client) Managed(ctx context.Context, candidate string) (bool, erro
 	return false, nil
 }
 
+func (client *Client) Ready(ctx context.Context) error {
+	_, err := client.Managed(ctx, string(filepath.Separator)+"__plex_orphan_watcher_readiness__")
+	return err
+}
+
 func (client *Client) login(ctx context.Context) error {
 	form := url.Values{"username": {client.username}, "password": {client.password}}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, client.baseURL+"/api/v2/auth/login", strings.NewReader(form.Encode()))

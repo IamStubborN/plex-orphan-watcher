@@ -55,7 +55,7 @@ func (client *Client) CountMediaUnder(ctx context.Context, directory string) (in
 		return 0, err
 	}
 	if len(sections) == 0 {
-		return 0, fmt.Errorf("Plex API returned no TV library sections")
+		return 0, fmt.Errorf("plex API returned no TV library sections")
 	}
 
 	directory = path.Clean(directory)
@@ -68,6 +68,17 @@ func (client *Client) CountMediaUnder(ctx context.Context, directory string) (in
 		count += sectionCount
 	}
 	return count, nil
+}
+
+func (client *Client) Ready(ctx context.Context) error {
+	sections, err := client.tvSections(ctx)
+	if err != nil {
+		return err
+	}
+	if len(sections) == 0 {
+		return fmt.Errorf("plex API returned no TV library sections")
+	}
+	return nil
 }
 
 func (client *Client) tvSections(ctx context.Context) ([]string, error) {
@@ -86,7 +97,7 @@ func (client *Client) tvSections(ctx context.Context) ([]string, error) {
 
 func (client *Client) countSection(ctx context.Context, section, directory string) (int, error) {
 	count := 0
-	for start := 0; ; start += client.pageSize {
+	for start := 0; ; {
 		query := url.Values{
 			"type":                   {"4"},
 			"X-Plex-Container-Start": {strconv.Itoa(start)},
@@ -110,10 +121,11 @@ func (client *Client) countSection(ctx context.Context, section, directory strin
 		}
 
 		returned := len(response.MediaContainer.Metadata)
-		if returned == 0 || returned < client.pageSize ||
+		if returned == 0 ||
 			(response.MediaContainer.TotalSize > 0 && start+returned >= response.MediaContainer.TotalSize) {
 			break
 		}
+		start += returned
 	}
 	return count, nil
 }
@@ -139,7 +151,7 @@ func (client *Client) get(ctx context.Context, endpoint string, query url.Values
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
-		return fmt.Errorf("Plex API returned %s: %s", response.Status, strings.TrimSpace(string(body)))
+		return fmt.Errorf("plex API returned %s: %s", response.Status, strings.TrimSpace(string(body)))
 	}
 	if err := json.NewDecoder(response.Body).Decode(target); err != nil {
 		return fmt.Errorf("decode Plex response: %w", err)

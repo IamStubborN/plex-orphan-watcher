@@ -8,20 +8,31 @@ import (
 	"time"
 )
 
-func Handler() http.Handler {
+type ReadinessCheck func(*http.Request) error
+
+func Handler(ready ReadinessCheck) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		writer.WriteHeader(http.StatusOK)
 		_, _ = writer.Write([]byte("ok\n"))
 	})
+	mux.HandleFunc("GET /readyz", func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		if err := ready(request); err != nil {
+			http.Error(writer, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte("ready\n"))
+	})
 	return mux
 }
 
-func Run(ctx context.Context, address string) error {
+func Run(ctx context.Context, address string, ready ReadinessCheck) error {
 	server := &http.Server{
 		Addr:              address,
-		Handler:           Handler(),
+		Handler:           Handler(ready),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {

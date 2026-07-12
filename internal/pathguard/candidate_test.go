@@ -5,6 +5,13 @@ import (
 	"testing"
 )
 
+func TestCandidateFromEventRejectsQuarantine(t *testing.T) {
+	root := t.TempDir()
+	if candidate, valid := CandidateFromEvent(root, filepath.Join(root, ".plex-orphan-quarantine", "Show", "file.ass")); valid {
+		t.Fatalf("quarantine event produced candidate %q", candidate)
+	}
+}
+
 func TestCandidateFromEventReturnsDirectChild(t *testing.T) {
 	root := t.TempDir()
 	show := filepath.Join(root, "The Eminence in Shadow (2022)")

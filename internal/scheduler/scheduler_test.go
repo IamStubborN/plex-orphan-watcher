@@ -83,6 +83,23 @@ func TestSchedulerIgnoresEventsImmediatelyAfterCompletion(t *testing.T) {
 	}
 }
 
+func TestEnqueueCoalescesBurstWithoutBlocking(t *testing.T) {
+	scheduler := New(time.Second, time.Second, time.Minute, &fakeEvaluator{}, discardLogger())
+	done := make(chan struct{})
+	go func() {
+		for index := 0; index < 5000; index++ {
+			scheduler.Enqueue("/data/tv/Show")
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Enqueue blocked during event burst")
+	}
+}
+
 func waitForCalls(t *testing.T, evaluator *fakeEvaluator, want int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)

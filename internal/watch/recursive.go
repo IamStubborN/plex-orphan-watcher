@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/IamStubborN/plex-orphan-watcher/internal/pathguard"
+	"github.com/IamStubborN/plex-orphan-watcher/internal/quarantine"
 	"github.com/fsnotify/fsnotify"
 )
 
@@ -86,6 +87,9 @@ func (watcher *Recursive) addTree(root string) error {
 			return err
 		}
 		if entry.IsDir() {
+			if path != root && quarantine.Contains(path) {
+				return filepath.SkipDir
+			}
 			if err := watcher.watcher.Add(path); err != nil {
 				return fmt.Errorf("watch directory %q: %w", path, err)
 			}

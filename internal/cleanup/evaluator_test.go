@@ -36,8 +36,15 @@ func (fake fakeTorrents) Managed(context.Context, string) (bool, error) {
 	return fake.managed, fake.err
 }
 
-func TestEvaluateDeletesOrphanWithOnlyExtras(t *testing.T) {
+func TestEvaluateKeepsOrphanWithVideoExtras(t *testing.T) {
 	root, show := orphanFixture(t)
+	extra := filepath.Join(show, "Season 01", "Extra", "NCOP.mkv")
+	if err := os.MkdirAll(filepath.Dir(extra), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(extra, []byte("extra"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	evaluator := New([]string{root}, fakePlex{}, fakeTorrents{}, false)
 
 	result, err := evaluator.Evaluate(context.Background(), show)
@@ -45,11 +52,33 @@ func TestEvaluateDeletesOrphanWithOnlyExtras(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != Deleted {
-		t.Fatalf("status = %q, want %q", result.Status, Deleted)
+	if result.Status != BlockedVideo {
+		t.Fatalf("status = %q, want %q", result.Status, BlockedVideo)
+	}
+	if _, err := os.Stat(show); err != nil {
+		t.Fatalf("candidate with video extra was removed: %v", err)
+	}
+}
+
+func TestEvaluateQuarantinesOrphanWithoutVideo(t *testing.T) {
+	root, show := orphanFixture(t)
+	evaluator := New([]string{root}, fakePlex{}, fakeTorrents{}, false)
+
+	result, err := evaluator.Evaluate(context.Background(), show)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != Quarantined {
+		t.Fatalf("status = %q, want %q", result.Status, Quarantined)
 	}
 	if _, err := os.Stat(show); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("candidate still exists or stat failed unexpectedly: %v", err)
+		t.Fatalf("original candidate still exists: %v", err)
+	}
+	if result.Path == "" {
+		t.Fatal("quarantine path is empty")
+	}
+	if _, err := os.Stat(result.Path); err != nil {
+		t.Fatalf("quarantined candidate is missing: %v", err)
 	}
 }
 
@@ -80,7 +109,7 @@ func TestEvaluateFailsClosed(t *testing.T) {
 		wantErr  bool
 	}{
 		{name: "indexed by Plex", plex: fakePlex{count: 1}, status: BlockedPlex},
-		{name: "primary video remains", primary: true, status: BlockedPrimaryVideo},
+		{name: "video remains", primary: true, status: BlockedVideo},
 		{name: "managed by torrent", torrents: fakeTorrents{managed: true}, status: BlockedTorrent},
 		{name: "Plex unavailable", plex: fakePlex{err: errors.New("offline")}, wantErr: true},
 		{name: "qBittorrent unavailable", torrents: fakeTorrents{err: errors.New("offline")}, wantErr: true},
@@ -90,6 +119,9 @@ func TestEvaluateFailsClosed(t *testing.T) {
 			root, show := orphanFixture(t)
 			if test.primary {
 				episode := filepath.Join(show, "Season 01", "Show - S01E01.mkv")
+				if err := os.MkdirAll(filepath.Dir(episode), 0o755); err != nil {
+					t.Fatal(err)
+				}
 				if err := os.WriteFile(episode, []byte("episode"), 0o644); err != nil {
 					t.Fatal(err)
 				}
@@ -149,11 +181,7 @@ func orphanFixture(t *testing.T) (string, string) {
 	t.Helper()
 	root := t.TempDir()
 	show := filepath.Join(root, "Show")
-	extra := filepath.Join(show, "Season 01", "Extra", "NCOP.mkv")
-	if err := os.MkdirAll(filepath.Dir(extra), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(extra, []byte("extra"), 0o644); err != nil {
+	if err := os.MkdirAll(show, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(show, "subtitle.ass"), []byte("subtitle"), 0o644); err != nil {

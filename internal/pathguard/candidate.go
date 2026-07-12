@@ -3,11 +3,16 @@ package pathguard
 import (
 	"path/filepath"
 	"strings"
+
+	"github.com/IamStubborN/plex-orphan-watcher/internal/quarantine"
 )
 
 // CandidateFromEvent resolves an event path to the direct child of root that
 // owns it. Paths at or outside root are rejected.
 func CandidateFromEvent(root, eventPath string) (string, bool) {
+	if quarantine.Contains(eventPath) {
+		return "", false
+	}
 	rootAbs, err := filepath.Abs(root)
 	if err != nil {
 		return "", false

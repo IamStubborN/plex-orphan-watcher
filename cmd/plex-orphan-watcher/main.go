@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/IamStubborN/plex-orphan-watcher/internal/health"
 	"github.com/IamStubborN/plex-orphan-watcher/internal/plex"
 	"github.com/IamStubborN/plex-orphan-watcher/internal/qbittorrent"
+	"github.com/IamStubborN/plex-orphan-watcher/internal/quarantine"
 	"github.com/IamStubborN/plex-orphan-watcher/internal/scheduler"
 	watcher "github.com/IamStubborN/plex-orphan-watcher/internal/watch"
 	"golang.org/x/sync/errgroup"
@@ -38,7 +40,7 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("read Plex token file: %w", err)
 	}
 	if len(strings.TrimSpace(string(token))) == 0 {
-		return fmt.Errorf("Plex token file is empty")
+		return fmt.Errorf("plex token file is empty")
 	}
 	plexClient := plex.New(settings.PlexURL, string(token))
 
@@ -66,7 +68,29 @@ func run(logger *slog.Logger) error {
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.Go(func() error { return queue.Run(groupCtx) })
 	group.Go(func() error { return filesystemWatcher.Run(groupCtx) })
-	group.Go(func() error { return health.Run(groupCtx, settings.HealthAddress) })
+	group.Go(func() error {
+		return quarantine.Run(groupCtx, settings.WatchRoots, settings.QuarantineRetention, logger)
+	})
+	group.Go(func() error {
+		return health.Run(groupCtx, settings.HealthAddress, func(request *http.Request) error {
+			for _, root := range settings.WatchRoots {
+				info, err := os.Stat(root)
+				if err != nil {
+					return fmt.Errorf("watch root %q: %w", root, err)
+				}
+				if !info.IsDir() {
+					return fmt.Errorf("watch root %q is not a directory", root)
+				}
+			}
+			if err := plexClient.Ready(request.Context()); err != nil {
+				return fmt.Errorf("plex readiness: %w", err)
+			}
+			if err := torrents.Ready(request.Context()); err != nil {
+				return fmt.Errorf("qBittorrent readiness: %w", err)
+			}
+			return nil
+		})
+	})
 
 	logger.Info(
 		"watcher started",
@@ -75,6 +99,7 @@ func run(logger *slog.Logger) error {
 		"delete_delay", settings.DeleteDelay,
 		"retry_interval", settings.RetryInterval,
 		"max_retry_age", settings.MaxRetryAge,
+		"quarantine_retention", settings.QuarantineRetention,
 	)
 	return group.Wait()
 }
