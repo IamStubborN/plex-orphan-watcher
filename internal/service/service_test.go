@@ -85,6 +85,35 @@ func TestProcessDueCancelsWhenItemReappears(t *testing.T) {
 	}
 }
 
+func TestProcessDueReschedulesWhileVideoStillExists(t *testing.T) {
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	store := openStore(t)
+	item := itemFixture()
+	_, _ = store.Reconcile(model.Snapshot{Items: map[string]model.Item{item.RatingKey: item}, SyncedAt: now}, now, time.Minute)
+	_, _ = store.Reconcile(model.Snapshot{Items: map[string]model.Item{}, SyncedAt: now.Add(time.Minute)}, now.Add(time.Minute), time.Minute)
+	planner := &fakePlanner{plan: model.DeletionPlan{PendingID: item.RatingKey, Reason: "video_present_on_disk"}}
+	executor := &fakeExecutor{}
+	plex := &fakePlex{snapshots: []model.Snapshot{{Items: map[string]model.Item{}, SyncedAt: now.Add(3 * time.Minute)}}}
+	service := New(plex, store, planner, executor, 15*time.Minute, false, discardLogger())
+	service.now = func() time.Time { return now.Add(3 * time.Minute) }
+	if err := service.ProcessDue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := store.Pending(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].Status != model.PendingWaiting {
+		t.Fatalf("pending = %+v, want rescheduled item", pending)
+	}
+	if want := now.Add(18 * time.Minute); !pending[0].DueAt.Equal(want) {
+		t.Fatalf("due at = %s, want %s", pending[0].DueAt, want)
+	}
+	if executor.calls != 0 {
+		t.Fatalf("executor calls = %d, want 0", executor.calls)
+	}
+}
+
 func openStore(t *testing.T) *state.Store {
 	t.Helper()
 	store, err := state.Open(filepath.Join(t.TempDir(), "watcher.db"))

@@ -44,6 +44,24 @@ func TestRunEventSourceReconnectsAndDeliversEvents(t *testing.T) {
 	}
 }
 
+func TestNextEventSourceBackoffDoublesAndCaps(t *testing.T) {
+	if got := nextEventSourceBackoff(time.Second); got != 2*time.Second {
+		t.Fatalf("backoff = %s, want 2s", got)
+	}
+	if got := nextEventSourceBackoff(time.Minute); got != time.Minute {
+		t.Fatalf("backoff = %s, want 1m", got)
+	}
+}
+
+func TestReconnectDelayResetsAfterStableConnection(t *testing.T) {
+	if got := reconnectDelay(time.Minute, stableEventSourceDuration); got != time.Second {
+		t.Fatalf("backoff = %s, want 1s", got)
+	}
+	if got := reconnectDelay(8*time.Second, stableEventSourceDuration-time.Nanosecond); got != 8*time.Second {
+		t.Fatalf("backoff = %s, want 8s", got)
+	}
+}
+
 type flakyEventSource struct {
 	mu    sync.Mutex
 	calls int

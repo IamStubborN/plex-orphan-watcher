@@ -66,6 +66,7 @@ func Run(ctx context.Context, source EventSource, service Service, reconcileInte
 func runEventSource(ctx context.Context, source EventSource, events chan<- plex.DeletionEvent, logger *slog.Logger) error {
 	backoff := time.Second
 	for {
+		connectedAt := time.Now()
 		err := source.StreamEvents(ctx, func(event plex.DeletionEvent) {
 			select {
 			case events <- event:
@@ -75,6 +76,7 @@ func runEventSource(ctx context.Context, source EventSource, events chan<- plex.
 		if ctx.Err() != nil {
 			return nil
 		}
+		backoff = reconnectDelay(backoff, time.Since(connectedAt))
 		logger.Warn("Plex EventSource disconnected", "error", err, "reconnect_in", backoff)
 		timer := time.NewTimer(backoff)
 		select {
@@ -83,9 +85,23 @@ func runEventSource(ctx context.Context, source EventSource, events chan<- plex.
 			return nil
 		case <-timer.C:
 		}
-		backoff *= 2
-		if backoff > time.Minute {
-			backoff = time.Minute
-		}
+		backoff = nextEventSourceBackoff(backoff)
 	}
+}
+
+const stableEventSourceDuration = 30 * time.Second
+
+func reconnectDelay(current, connectedFor time.Duration) time.Duration {
+	if connectedFor >= stableEventSourceDuration {
+		return time.Second
+	}
+	return current
+}
+
+func nextEventSourceBackoff(current time.Duration) time.Duration {
+	next := current * 2
+	if next > time.Minute {
+		return time.Minute
+	}
+	return next
 }

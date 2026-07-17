@@ -68,7 +68,7 @@ func (service *Service) EnqueueEvent(ratingKey string) error {
 	}
 	service.logger.Info("cleanup candidate discovered",
 		"trigger", pending.Trigger, "item_type", pending.Item.Type, "rating_key", pending.Item.RatingKey,
-		"title", pending.Item.Title, "decision", "scheduled", "due_at", pending.DueAt)
+		"title", pending.Item.Title, "old_media_paths", pending.Item.Parts, "decision", "scheduled", "due_at", pending.DueAt)
 	return nil
 }
 
@@ -104,6 +104,17 @@ func (service *Service) ProcessDue(ctx context.Context) error {
 		}
 		service.logPlan(candidate, plan)
 		if len(plan.Actions) == 0 {
+			if plan.Reason == "video_present_on_disk" {
+				if err := service.store.Reschedule(candidate.ID, now.Add(service.settleDelay)); err != nil {
+					return err
+				}
+				service.logger.Info("cleanup deferred",
+					"trigger", candidate.Trigger, "item_type", candidate.Item.Type,
+					"rating_key", candidate.Item.RatingKey, "title", candidate.Item.Title,
+					"decision", "rescheduled", "reason", plan.Reason,
+					"due_at", now.Add(service.settleDelay))
+				continue
+			}
 			if err := service.store.Complete(candidate.ID); err != nil {
 				return err
 			}

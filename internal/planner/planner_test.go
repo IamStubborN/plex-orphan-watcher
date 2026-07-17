@@ -41,6 +41,32 @@ func TestBuildDeletesOnlyExactEpisodeSidecarsWhenOtherVideoRemains(t *testing.T)
 	}
 }
 
+func TestBuildCleansRemovedMoviePartWhileRatingKeyRemains(t *testing.T) {
+	root := t.TempDir()
+	movie := filepath.Join(root, "Movie (2026)")
+	removed := filepath.Join(movie, "Movie (2026) - part1.mkv")
+	remaining := filepath.Join(movie, "Movie (2026) - part2.mkv")
+	sidecar := filepath.Join(movie, "Movie (2026) - part1.ru.srt")
+	write(t, remaining)
+	write(t, sidecar)
+	pending := model.Pending{ID: "10:part1", Item: model.Item{
+		RatingKey: "10", Type: model.ItemMovie, Title: "Movie", Parts: []string{removed},
+	}}
+	snapshot := model.Snapshot{
+		Items: map[string]model.Item{"10": {
+			RatingKey: "10", Type: model.ItemMovie, Title: "Movie", Parts: []string{remaining},
+		}},
+		Locations: []model.LibraryLocation{{SectionID: "1", SectionType: model.ItemMovie, Path: root}},
+	}
+	plan, err := New([]string{root}, nil).Build(pending, snapshot, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := actionPaths(plan); !equalStrings(got, []string{sidecar}) {
+		t.Fatalf("actions = %v, want removed part sidecar", got)
+	}
+}
+
 func TestBuildCollapsesEmptySeasonAndShowIntoSingleTreeAction(t *testing.T) {
 	root := t.TempDir()
 	show := filepath.Join(root, "Show")
@@ -145,7 +171,7 @@ func TestBuildCancelsWhenPlexStillReferencesPart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Actions) != 0 || plan.Reason != "item_present_in_plex" {
+	if len(plan.Actions) != 0 || plan.Reason != "media_part_present_in_plex" {
 		t.Fatalf("plan = %+v", plan)
 	}
 }

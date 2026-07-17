@@ -95,6 +95,9 @@ func report(args []string) error {
 	}
 	store, err := state.OpenReadOnly(*statePath)
 	if err != nil {
+		if !state.IsLockTimeout(err) {
+			return err
+		}
 		return fetchReport(*reportURL, err)
 	}
 	defer store.Close()

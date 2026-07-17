@@ -34,11 +34,6 @@ func (planner *Planner) Build(pending model.Pending, snapshot model.Snapshot, no
 		PendingID: pending.ID, RatingKey: pending.Item.RatingKey, ItemType: pending.Item.Type,
 		Title: pending.Item.Title, CreatedAt: now,
 	}
-	if _, exists := snapshot.Items[pending.Item.RatingKey]; exists {
-		plan.Reason = "item_present_in_plex"
-		return plan, nil
-	}
-
 	actions := make(map[string]model.Action)
 	for _, part := range pending.Item.Parts {
 		part = filepath.Clean(part)

@@ -54,6 +54,85 @@ func TestLiveModeRemovesEmptyShowTreeAfterRepeatedPlexValidation(t *testing.T) {
 	}
 }
 
+func TestLiveModeCleansOnlyRemovedPartOfMultiPartMovie(t *testing.T) {
+	root := t.TempDir()
+	movieDir := filepath.Join(root, "Movie (2026)")
+	removedPart := filepath.Join(movieDir, "Movie (2026) - part1.mkv")
+	removedSidecar := filepath.Join(movieDir, "Movie (2026) - part1.ru.srt")
+	remainingPart := filepath.Join(movieDir, "Movie (2026) - part2.mkv")
+	for _, file := range []string{removedPart, removedSidecar, remainingPart} {
+		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, []byte("fixture"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var firstPartDeleted atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/library/sections":
+			writeJSON(t, response, map[string]any{"MediaContainer": map[string]any{"Directory": []any{
+				map[string]any{"key": "1", "type": "movie", "Location": []any{map[string]any{"path": root}}},
+			}}})
+		case "/library/sections/1/all":
+			parts := []any{map[string]any{"file": remainingPart}}
+			if !firstPartDeleted.Load() {
+				parts = append([]any{map[string]any{"file": removedPart}}, parts...)
+			}
+			metadata := []any{map[string]any{
+				"ratingKey": "10", "type": "movie", "title": "Movie",
+				"Media": []any{map[string]any{"Part": parts}},
+			}}
+			writeJSON(t, response, map[string]any{"MediaContainer": map[string]any{
+				"totalSize": len(metadata), "size": len(metadata), "Metadata": metadata,
+			}})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	store, err := state.Open(filepath.Join(t.TempDir(), "watcher.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	watcher := service.New(
+		plex.New(server.URL, "secret"), store, planner.New([]string{root}, nil),
+		cleanup.NewExecutor(false), time.Millisecond, false, logger,
+	)
+	if err := watcher.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(removedPart); err != nil {
+		t.Fatal(err)
+	}
+	firstPartDeleted.Store(true)
+	if err := watcher.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	if err := watcher.ProcessDue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(removedSidecar); !os.IsNotExist(err) {
+		t.Fatalf("removed part sidecar still exists: %v", err)
+	}
+	if _, err := os.Stat(remainingPart); err != nil {
+		t.Fatalf("remaining part was changed: %v", err)
+	}
+	pending, err := store.Pending(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("pending = %+v, want none", pending)
+	}
+}
+
 type fixture struct {
 	root     string
 	show     string
