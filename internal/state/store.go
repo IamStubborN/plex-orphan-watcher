@@ -157,7 +157,7 @@ func (store *Store) Enqueue(ratingKey, trigger string, observedAt, dueAt time.Ti
 }
 
 func (store *Store) Pending(includeDryRun bool) ([]model.Pending, error) {
-	var result []model.Pending
+	result := make([]model.Pending, 0)
 	err := store.db.View(func(tx *bolt.Tx) error {
 		return tx.Bucket(pendingBucket).ForEach(func(_, value []byte) error {
 			var pending model.Pending

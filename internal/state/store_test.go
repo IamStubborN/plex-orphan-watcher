@@ -19,6 +19,21 @@ func TestOpenRejectsCorruptDatabase(t *testing.T) {
 	}
 }
 
+func TestPendingReturnsEmptySlice(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "watcher.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	pending, err := store.Pending(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending == nil || len(pending) != 0 {
+		t.Fatalf("pending = %#v, want non-nil empty slice", pending)
+	}
+}
+
 func TestReconcilePersistsRemovedItemAsPending(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "watcher.db")
 	store, err := Open(path)
