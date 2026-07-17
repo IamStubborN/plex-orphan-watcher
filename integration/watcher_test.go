@@ -2,28 +2,75 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/IamStubborN/plex-orphan-watcher/internal/cleanup"
+	"github.com/IamStubborN/plex-orphan-watcher/internal/planner"
 	"github.com/IamStubborN/plex-orphan-watcher/internal/plex"
-	"github.com/IamStubborN/plex-orphan-watcher/internal/qbittorrent"
-	"github.com/IamStubborN/plex-orphan-watcher/internal/scheduler"
-	watcher "github.com/IamStubborN/plex-orphan-watcher/internal/watch"
+	"github.com/IamStubborN/plex-orphan-watcher/internal/service"
+	"github.com/IamStubborN/plex-orphan-watcher/internal/state"
 )
 
-func TestRemovedLastEpisodeQuarantinesOnlyOrphanedShowDirectory(t *testing.T) {
+func TestDryRunDiscoversOrphansWithoutMutation(t *testing.T) {
+	fixture := newFixture(t, true)
+	fixture.removeVideo(t)
+	fixture.reconcileAndProcess(t)
+
+	if _, err := os.Stat(fixture.subtitle); err != nil {
+		t.Fatalf("dry-run removed subtitle: %v", err)
+	}
+	pending, err := fixture.store.Pending(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || len(pending[0].Plan.Actions) != 1 {
+		t.Fatalf("pending = %+v", pending)
+	}
+}
+
+func TestLiveModeRemovesEmptyShowTreeAfterRepeatedPlexValidation(t *testing.T) {
+	fixture := newFixture(t, false)
+	fixture.removeVideo(t)
+	fixture.reconcileAndProcess(t)
+
+	if _, err := os.Stat(fixture.show); !os.IsNotExist(err) {
+		t.Fatalf("show still exists: %v", err)
+	}
+	pending, err := fixture.store.Pending(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("pending = %+v", pending)
+	}
+}
+
+type fixture struct {
+	root     string
+	show     string
+	video    string
+	subtitle string
+	deleted  atomic.Bool
+	store    *state.Store
+	service  *service.Service
+}
+
+func newFixture(t *testing.T, dryRun bool) *fixture {
+	t.Helper()
 	root := t.TempDir()
 	show := filepath.Join(root, "Show")
-	episode := filepath.Join(show, "Season 01", "Show - S01E01.mkv")
+	video := filepath.Join(show, "Season 01", "Show - S01E01.mkv")
 	subtitle := filepath.Join(show, "Season 01", "Show - S01E01.ru.ass")
-	for _, file := range []string{episode, subtitle} {
+	for _, file := range []string{video, subtitle} {
 		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -31,61 +78,67 @@ func TestRemovedLastEpisodeQuarantinesOnlyOrphanedShowDirectory(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-
-	plexServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.Header.Get("X-Plex-Token") != "secret" {
-			http.Error(response, "unauthorized", http.StatusUnauthorized)
-			return
-		}
+	result := &fixture{root: root, show: show, video: video, subtitle: subtitle}
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/library/sections":
-			_, _ = io.WriteString(response, `{"MediaContainer":{"Directory":[{"key":"2","type":"show"}]}}`)
+			writeJSON(t, response, map[string]any{"MediaContainer": map[string]any{"Directory": []any{
+				map[string]any{"key": "2", "type": "show", "Location": []any{map[string]any{"path": root}}},
+			}}})
 		case "/library/sections/2/all":
-			_, _ = io.WriteString(response, `{"MediaContainer":{"totalSize":0,"size":0,"Metadata":[]}}`)
+			metadata := []any{}
+			if !result.deleted.Load() {
+				metadata = append(metadata, map[string]any{
+					"ratingKey": "101", "type": "episode", "title": "Episode 1",
+					"parentRatingKey": "51", "parentTitle": "Season 1",
+					"grandparentRatingKey": "11", "grandparentTitle": "Show",
+					"Media": []any{map[string]any{"Part": []any{map[string]any{"file": video}}}},
+				})
+			}
+			writeJSON(t, response, map[string]any{"MediaContainer": map[string]any{"totalSize": len(metadata), "size": len(metadata), "Metadata": metadata}})
 		default:
 			http.NotFound(response, request)
 		}
 	}))
-	t.Cleanup(plexServer.Close)
-	qbit := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/api/v2/torrents/info" {
-			http.NotFound(response, request)
-			return
-		}
-		_, _ = io.WriteString(response, `[]`)
-	}))
-	t.Cleanup(qbit.Close)
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	evaluator := cleanup.New([]string{root}, plex.New(plexServer.URL, "secret"), qbittorrent.New(qbit.URL, "", ""), false)
-	queue := scheduler.New(20*time.Millisecond, 20*time.Millisecond, time.Second, evaluator, logger)
-	filesystemWatcher, err := watcher.NewRecursive([]string{root}, queue.Enqueue)
+	t.Cleanup(server.Close)
+	store, err := state.Open(filepath.Join(t.TempDir(), "watcher.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = filesystemWatcher.Close() })
-
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go func() { _ = queue.Run(ctx) }()
-	go func() { _ = filesystemWatcher.Run(ctx) }()
-
-	if err := os.Remove(episode); err != nil {
+	t.Cleanup(func() { _ = store.Close() })
+	result.store = store
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	client := plex.New(server.URL, "secret")
+	result.service = service.New(client, store, planner.New([]string{root}, nil), cleanup.NewExecutor(dryRun), time.Millisecond, dryRun, logger)
+	if err := result.service.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	return result
+}
 
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(show); os.IsNotExist(err) {
-			matches, globErr := filepath.Glob(filepath.Join(root, ".plex-orphan-quarantine", "*-Show"))
-			if globErr != nil {
-				t.Fatal(globErr)
-			}
-			if len(matches) == 1 {
-				return
-			}
-		}
-		time.Sleep(20 * time.Millisecond)
+func (fixture *fixture) removeVideo(t *testing.T) {
+	t.Helper()
+	if err := os.Remove(fixture.video); err != nil {
+		t.Fatal(err)
 	}
-	t.Fatal("orphaned show directory was not quarantined")
+	fixture.deleted.Store(true)
+}
+
+func (fixture *fixture) reconcileAndProcess(t *testing.T) {
+	t.Helper()
+	if err := fixture.service.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	if err := fixture.service.ProcessDue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeJSON(t *testing.T, response http.ResponseWriter, value any) {
+	t.Helper()
+	response.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(response).Encode(value); err != nil {
+		t.Errorf("encode fixture: %v", err)
+	}
 }

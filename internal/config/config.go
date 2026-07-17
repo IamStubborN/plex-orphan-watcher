@@ -2,70 +2,81 @@ package config
 
 import (
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 )
 
 type Config struct {
-	WatchRoots          []string
-	PlexURL             string
-	PlexTokenFile       string
-	QBittorrentURL      string
-	QBittorrentUser     string
-	QBittorrentPassword string
-	DryRun              bool
-	DeleteDelay         time.Duration
-	RetryInterval       time.Duration
-	MaxRetryAge         time.Duration
-	QuarantineRetention time.Duration
-	HealthAddress       string
+	DeleteRoots       []string
+	AuditRoots        []string
+	PlexURL           string
+	PlexTokenFile     string
+	StatePath         string
+	DryRun            bool
+	SettleDelay       time.Duration
+	ReconcileInterval time.Duration
+	HealthAddress     string
 }
 
 func Load(getenv func(string) string) (Config, error) {
-	config := Config{
-		PlexURL:             strings.TrimSpace(getenv("PLEX_URL")),
-		PlexTokenFile:       strings.TrimSpace(getenv("PLEX_TOKEN_FILE")),
-		QBittorrentURL:      strings.TrimSpace(getenv("QBITTORRENT_URL")),
-		QBittorrentUser:     getenv("QBITTORRENT_USER"),
-		QBittorrentPassword: getenv("QBITTORRENT_PASSWORD"),
-		HealthAddress:       valueOrDefault(getenv("HEALTH_ADDRESS"), ":8080"),
+	settings := Config{
+		DeleteRoots:   parseRoots(getenv("DELETE_ROOTS")),
+		AuditRoots:    parseRoots(getenv("AUDIT_ROOTS")),
+		PlexURL:       strings.TrimRight(strings.TrimSpace(getenv("PLEX_URL")), "/"),
+		PlexTokenFile: strings.TrimSpace(getenv("PLEX_TOKEN_FILE")),
+		StatePath:     valueOrDefault(getenv("STATE_PATH"), "/state/watcher.db"),
+		HealthAddress: valueOrDefault(getenv("HEALTH_ADDRESS"), ":8080"),
 	}
-	for _, root := range strings.Split(getenv("WATCH_ROOTS"), ",") {
-		if root = strings.TrimSpace(root); root != "" {
-			config.WatchRoots = append(config.WatchRoots, root)
-		}
+	if len(settings.DeleteRoots) == 0 {
+		return Config{}, fmt.Errorf("DELETE_ROOTS is required")
 	}
-	if len(config.WatchRoots) == 0 {
-		return Config{}, fmt.Errorf("WATCH_ROOTS is required")
+	if len(settings.AuditRoots) == 0 {
+		return Config{}, fmt.Errorf("AUDIT_ROOTS is required")
 	}
-	if config.PlexURL == "" {
+	if settings.PlexURL == "" {
 		return Config{}, fmt.Errorf("PLEX_URL is required")
 	}
-	if config.PlexTokenFile == "" {
+	if settings.PlexTokenFile == "" {
 		return Config{}, fmt.Errorf("PLEX_TOKEN_FILE is required")
 	}
-	if config.QBittorrentURL == "" {
-		return Config{}, fmt.Errorf("QBITTORRENT_URL is required")
+	if err := validatePolicies(settings.DeleteRoots, settings.AuditRoots); err != nil {
+		return Config{}, err
 	}
 
 	var err error
-	if config.DryRun, err = parseBool(getenv("DRY_RUN"), true); err != nil {
+	if settings.DryRun, err = parseBool(getenv("DRY_RUN"), true); err != nil {
 		return Config{}, err
 	}
-	if config.DeleteDelay, err = parseDuration(getenv("DELETE_DELAY"), 30*time.Second, "DELETE_DELAY"); err != nil {
+	if settings.SettleDelay, err = parseDuration(getenv("SETTLE_DELAY"), 15*time.Minute, "SETTLE_DELAY"); err != nil {
 		return Config{}, err
 	}
-	if config.RetryInterval, err = parseDuration(getenv("RETRY_INTERVAL"), 30*time.Second, "RETRY_INTERVAL"); err != nil {
+	if settings.ReconcileInterval, err = parseDuration(getenv("RECONCILE_INTERVAL"), time.Hour, "RECONCILE_INTERVAL"); err != nil {
 		return Config{}, err
 	}
-	if config.MaxRetryAge, err = parseDuration(getenv("MAX_RETRY_AGE"), 10*time.Minute, "MAX_RETRY_AGE"); err != nil {
-		return Config{}, err
+	return settings, nil
+}
+
+func parseRoots(value string) []string {
+	var roots []string
+	for _, root := range strings.Split(value, ",") {
+		if root = strings.TrimSpace(root); root != "" {
+			roots = append(roots, filepath.Clean(root))
+		}
 	}
-	if config.QuarantineRetention, err = parseDuration(getenv("QUARANTINE_RETENTION"), 7*24*time.Hour, "QUARANTINE_RETENTION"); err != nil {
-		return Config{}, err
+	return roots
+}
+
+func validatePolicies(deleteRoots, auditRoots []string) error {
+	for _, deleteRoot := range deleteRoots {
+		for _, auditRoot := range auditRoots {
+			if deleteRoot == auditRoot {
+				return fmt.Errorf("root %q has both delete and audit policies", deleteRoot)
+			}
+		}
 	}
-	return config, nil
+	return nil
 }
 
 func parseBool(value string, defaultValue bool) (bool, error) {

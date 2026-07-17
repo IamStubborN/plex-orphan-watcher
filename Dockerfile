@@ -9,7 +9,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/plex-orphan-watche
 FROM alpine:3.23
 
 LABEL org.opencontainers.image.source="https://github.com/IamStubborN/plex-orphan-watcher" \
-      org.opencontainers.image.description="Safely remove orphaned Plex TV show directories" \
+      org.opencontainers.image.description="Safely remove orphaned Plex movie and TV sidecars" \
       org.opencontainers.image.licenses="MIT"
 
 RUN addgroup -g 1000 watcher \

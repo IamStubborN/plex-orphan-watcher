@@ -1,33 +1,37 @@
 package config
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
 
 func TestLoadAppliesSafeDefaults(t *testing.T) {
 	values := map[string]string{
-		"WATCH_ROOTS":          "/data/internal/torrents/tv, /data/usb_drive/torrents/tv",
-		"PLEX_URL":             "http://plex:32400",
-		"PLEX_TOKEN_FILE":      "/run/secrets/plex_token",
-		"QBITTORRENT_URL":      "http://gluetun:8400",
-		"QBITTORRENT_USER":     "user",
-		"QBITTORRENT_PASSWORD": "secret",
+		"DELETE_ROOTS":    "/data/internal/media, /data/usb_drive/media",
+		"AUDIT_ROOTS":     "/data/internal/torrents, /data/usb_drive/torrents",
+		"PLEX_URL":        "http://plex:32400",
+		"PLEX_TOKEN_FILE": "/run/secrets/plex_token",
 	}
 
-	config, err := Load(func(key string) string { return values[key] })
-
+	settings, err := Load(func(key string) string { return values[key] })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(config.WatchRoots) != 2 {
-		t.Fatalf("WatchRoots = %v, want two roots", config.WatchRoots)
+	if !reflect.DeepEqual(settings.DeleteRoots, []string{"/data/internal/media", "/data/usb_drive/media"}) {
+		t.Fatalf("DeleteRoots = %v", settings.DeleteRoots)
 	}
-	if !config.DryRun {
+	if !reflect.DeepEqual(settings.AuditRoots, []string{"/data/internal/torrents", "/data/usb_drive/torrents"}) {
+		t.Fatalf("AuditRoots = %v", settings.AuditRoots)
+	}
+	if !settings.DryRun {
 		t.Fatal("DRY_RUN must default to true")
 	}
-	if config.DeleteDelay != 30*time.Second || config.RetryInterval != 30*time.Second || config.MaxRetryAge != 10*time.Minute || config.QuarantineRetention != 7*24*time.Hour {
-		t.Fatalf("unexpected duration defaults: %+v", config)
+	if settings.StatePath != "/state/watcher.db" {
+		t.Fatalf("StatePath = %q", settings.StatePath)
+	}
+	if settings.SettleDelay != 15*time.Minute || settings.ReconcileInterval != time.Hour {
+		t.Fatalf("unexpected duration defaults: %+v", settings)
 	}
 }
 
@@ -39,13 +43,25 @@ func TestLoadRejectsMissingRequiredValues(t *testing.T) {
 
 func TestLoadRejectsInvalidBoolean(t *testing.T) {
 	values := map[string]string{
-		"WATCH_ROOTS":     "/data/tv",
+		"DELETE_ROOTS":    "/data/media",
+		"AUDIT_ROOTS":     "/data/torrents",
 		"PLEX_URL":        "http://plex:32400",
 		"PLEX_TOKEN_FILE": "/run/secrets/plex_token",
-		"QBITTORRENT_URL": "http://qbittorrent:8400",
 		"DRY_RUN":         "sometimes",
 	}
 	if _, err := Load(func(key string) string { return values[key] }); err == nil {
 		t.Fatal("expected invalid DRY_RUN error")
+	}
+}
+
+func TestLoadRejectsOverlappingPolicies(t *testing.T) {
+	values := map[string]string{
+		"DELETE_ROOTS":    "/data",
+		"AUDIT_ROOTS":     "/data",
+		"PLEX_URL":        "http://plex:32400",
+		"PLEX_TOKEN_FILE": "/run/secrets/plex_token",
+	}
+	if _, err := Load(func(key string) string { return values[key] }); err == nil {
+		t.Fatal("expected overlapping root policy error")
 	}
 }

@@ -1,3 +1,5 @@
 .DS_Store
 /bin/
 /coverage.out
+/state/
+/plex-orphan-watcher

@@ -2,104 +2,144 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/IamStubborN/plex-orphan-watcher/internal/cleanup"
 	"github.com/IamStubborN/plex-orphan-watcher/internal/config"
 	"github.com/IamStubborN/plex-orphan-watcher/internal/health"
+	"github.com/IamStubborN/plex-orphan-watcher/internal/model"
+	"github.com/IamStubborN/plex-orphan-watcher/internal/planner"
 	"github.com/IamStubborN/plex-orphan-watcher/internal/plex"
-	"github.com/IamStubborN/plex-orphan-watcher/internal/qbittorrent"
-	"github.com/IamStubborN/plex-orphan-watcher/internal/quarantine"
-	"github.com/IamStubborN/plex-orphan-watcher/internal/scheduler"
-	watcher "github.com/IamStubborN/plex-orphan-watcher/internal/watch"
+	watcherruntime "github.com/IamStubborN/plex-orphan-watcher/internal/runtime"
+	"github.com/IamStubborN/plex-orphan-watcher/internal/service"
+	"github.com/IamStubborN/plex-orphan-watcher/internal/state"
 	"golang.org/x/sync/errgroup"
 )
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	if err := run(logger); err != nil {
+	if err := run(logger, os.Args[1:]); err != nil {
 		logger.Error("watcher stopped", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(logger *slog.Logger) error {
+func run(logger *slog.Logger, args []string) error {
+	if len(args) > 0 && args[0] == "report" {
+		return report(args[1:])
+	}
 	settings, err := config.Load(os.Getenv)
 	if err != nil {
 		return fmt.Errorf("load configuration: %w", err)
 	}
-
 	token, err := os.ReadFile(settings.PlexTokenFile)
 	if err != nil {
 		return fmt.Errorf("read Plex token file: %w", err)
 	}
 	if len(strings.TrimSpace(string(token))) == 0 {
-		return fmt.Errorf("plex token file is empty")
+		return fmt.Errorf("Plex token file is empty")
 	}
-	plexClient := plex.New(settings.PlexURL, string(token))
-
-	torrents := qbittorrent.New(
-		settings.QBittorrentURL,
-		settings.QBittorrentUser,
-		settings.QBittorrentPassword,
-	)
-	evaluator := cleanup.New(settings.WatchRoots, plexClient, torrents, settings.DryRun)
-	queue := scheduler.New(
-		settings.DeleteDelay,
-		settings.RetryInterval,
-		settings.MaxRetryAge,
-		evaluator,
-		logger,
-	)
-	filesystemWatcher, err := watcher.NewRecursive(settings.WatchRoots, queue.Enqueue)
+	store, err := state.Open(settings.StatePath)
 	if err != nil {
 		return err
 	}
-	defer filesystemWatcher.Close()
+	defer store.Close()
 
+	plexClient := plex.New(settings.PlexURL, string(token))
+	watcherService := service.New(
+		plexClient,
+		store,
+		planner.New(settings.DeleteRoots, settings.AuditRoots),
+		cleanup.NewExecutor(settings.DryRun),
+		settings.SettleDelay,
+		settings.DryRun,
+		logger,
+	)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	group, groupCtx := errgroup.WithContext(ctx)
-	group.Go(func() error { return queue.Run(groupCtx) })
-	group.Go(func() error { return filesystemWatcher.Run(groupCtx) })
 	group.Go(func() error {
-		return quarantine.Run(groupCtx, settings.WatchRoots, settings.QuarantineRetention, logger)
+		return watcherruntime.Run(groupCtx, plexClient, watcherService, settings.ReconcileInterval, logger)
 	})
 	group.Go(func() error {
-		return health.Run(groupCtx, settings.HealthAddress, func(request *http.Request) error {
-			for _, root := range settings.WatchRoots {
-				info, err := os.Stat(root)
-				if err != nil {
-					return fmt.Errorf("watch root %q: %w", root, err)
-				}
-				if !info.IsDir() {
-					return fmt.Errorf("watch root %q is not a directory", root)
-				}
-			}
-			if err := plexClient.Ready(request.Context()); err != nil {
-				return fmt.Errorf("plex readiness: %w", err)
-			}
-			if err := torrents.Ready(request.Context()); err != nil {
-				return fmt.Errorf("qBittorrent readiness: %w", err)
-			}
-			return nil
-		})
+		return health.Run(groupCtx, settings.HealthAddress, readiness(settings, plexClient, store))
 	})
-
-	logger.Info(
-		"watcher started",
-		"roots", settings.WatchRoots,
-		"dry_run", settings.DryRun,
-		"delete_delay", settings.DeleteDelay,
-		"retry_interval", settings.RetryInterval,
-		"max_retry_age", settings.MaxRetryAge,
-		"quarantine_retention", settings.QuarantineRetention,
-	)
+	logger.Info("watcher started",
+		"delete_roots", settings.DeleteRoots, "audit_roots", settings.AuditRoots,
+		"dry_run", settings.DryRun, "settle_delay", settings.SettleDelay,
+		"reconcile_interval", settings.ReconcileInterval, "state_path", settings.StatePath)
 	return group.Wait()
+}
+
+func report(args []string) error {
+	flags := flag.NewFlagSet("report", flag.ContinueOnError)
+	statePath := flags.String("state", "/state/watcher.db", "path to watcher state database")
+	format := flags.String("format", "json", "output format (json)")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *format != "json" {
+		return fmt.Errorf("unsupported report format %q", *format)
+	}
+	store, err := state.OpenReadOnly(*statePath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	pending, err := store.Pending(true)
+	if err != nil {
+		return err
+	}
+	plans := pending[:0]
+	for _, candidate := range pending {
+		if candidate.Status == model.PendingDryRun {
+			plans = append(plans, candidate)
+		}
+	}
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(plans)
+}
+
+func readiness(settings config.Config, plexClient *plex.Client, store *state.Store) health.ReadinessCheck {
+	return func(request *http.Request) error {
+		for _, root := range append(append([]string{}, settings.DeleteRoots...), settings.AuditRoots...) {
+			info, err := os.Stat(root)
+			if err != nil {
+				return fmt.Errorf("root %q: %w", root, err)
+			}
+			if !info.IsDir() {
+				return fmt.Errorf("root %q is not a directory", root)
+			}
+		}
+		if err := plexClient.Ready(request.Context()); err != nil {
+			return fmt.Errorf("Plex readiness: %w", err)
+		}
+		lastSync, err := store.LastSync()
+		if err != nil {
+			return fmt.Errorf("state readiness: %w", err)
+		}
+		maxAge := 2*settings.ReconcileInterval + time.Minute
+		if time.Since(lastSync) > maxAge {
+			return fmt.Errorf("Plex inventory is stale: last sync %s", lastSync)
+		}
+		info, err := os.Stat(filepath.Dir(settings.StatePath))
+		if err != nil {
+			return fmt.Errorf("state directory is unavailable: %w", err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("state directory is not a directory")
+		}
+		return nil
+	}
 }

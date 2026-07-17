@@ -2,24 +2,27 @@ services:
   plex-orphan-watcher:
     build: .
     restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     environment:
-      WATCH_ROOTS: /data/internal/media/tv,/data/internal/torrents/tv,/data/usb_drive/media/tv,/data/usb_drive/torrents/tv
       PLEX_URL: http://plex:32400
       PLEX_TOKEN_FILE: /run/secrets/plex_token
-      QBITTORRENT_URL: http://qbittorrent:8400
-      QBITTORRENT_USER: ""
-      QBITTORRENT_PASSWORD: ""
+      DELETE_ROOTS: /data/internal/media,/data/usb_drive/media
+      AUDIT_ROOTS: /data/internal/torrents,/data/usb_drive/torrents
+      STATE_PATH: /state/watcher.db
       DRY_RUN: "true"
-      DELETE_DELAY: 30s
-      RETRY_INTERVAL: 30s
-      MAX_RETRY_AGE: 10m
-      QUARANTINE_RETENTION: 168h
+      SETTLE_DELAY: 15m
+      RECONCILE_INTERVAL: 1h
       HEALTH_ADDRESS: :8080
     volumes:
-      - /mnt/internal/media/tv:/data/internal/media/tv:rw
-      - /mnt/internal/torrents/tv:/data/internal/torrents/tv:rw
-      - /mnt/usb_drive/media/tv:/data/usb_drive/media/tv:rw
-      - /mnt/usb_drive/torrents/tv:/data/usb_drive/torrents/tv:rw
+      - ./state:/state
+      - /mnt/internal/media:/data/internal/media:ro
+      - /mnt/usb_drive/media:/data/usb_drive/media:ro
+      - /mnt/internal/torrents:/data/internal/torrents:ro
+      - /mnt/usb_drive/torrents:/data/usb_drive/torrents:ro
     secrets:
       - plex_token
 
