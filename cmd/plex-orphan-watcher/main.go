@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -72,7 +73,7 @@ func run(logger *slog.Logger, args []string) error {
 		return watcherruntime.Run(groupCtx, plexClient, watcherService, settings.ReconcileInterval, logger)
 	})
 	group.Go(func() error {
-		return health.Run(groupCtx, settings.HealthAddress, readiness(settings, plexClient, store))
+		return health.Run(groupCtx, settings.HealthAddress, readiness(settings, plexClient, store), reportHandler(store))
 	})
 	logger.Info("watcher started",
 		"delete_roots", settings.DeleteRoots, "audit_roots", settings.AuditRoots,
@@ -85,6 +86,7 @@ func report(args []string) error {
 	flags := flag.NewFlagSet("report", flag.ContinueOnError)
 	statePath := flags.String("state", "/state/watcher.db", "path to watcher state database")
 	format := flags.String("format", "json", "output format (json)")
+	reportURL := flags.String("url", "http://127.0.0.1:8080/report", "running watcher report endpoint")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -93,9 +95,22 @@ func report(args []string) error {
 	}
 	store, err := state.OpenReadOnly(*statePath)
 	if err != nil {
-		return err
+		return fetchReport(*reportURL, err)
 	}
 	defer store.Close()
+	return encodeReport(os.Stdout, store)
+}
+
+func reportHandler(store *state.Store) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		if err := encodeReport(writer, store); err != nil {
+			http.Error(writer, err.Error(), http.StatusInternalServerError)
+		}
+	})
+}
+
+func encodeReport(writer io.Writer, store *state.Store) error {
 	pending, err := store.Pending(true)
 	if err != nil {
 		return err
@@ -106,9 +121,24 @@ func report(args []string) error {
 			plans = append(plans, candidate)
 		}
 	}
-	encoder := json.NewEncoder(os.Stdout)
+	encoder := json.NewEncoder(writer)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(plans)
+}
+
+func fetchReport(reportURL string, stateErr error) error {
+	client := &http.Client{Timeout: 5 * time.Second}
+	response, err := client.Get(reportURL)
+	if err != nil {
+		return fmt.Errorf("open state database: %v; query running watcher: %w", stateErr, err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
+		return fmt.Errorf("open state database: %v; report endpoint returned %s: %s", stateErr, response.Status, strings.TrimSpace(string(body)))
+	}
+	_, err = io.Copy(os.Stdout, response.Body)
+	return err
 }
 
 func readiness(settings config.Config, plexClient *plex.Client, store *state.Store) health.ReadinessCheck {

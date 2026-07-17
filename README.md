@@ -75,9 +75,13 @@ Run the first deployment with `DRY_RUN=true` and all media mounts read-only.
 After at least one week, inspect the persisted plans:
 
 ```bash
-docker compose run --rm plex-orphan-watcher \
+docker exec plex-orphan-watcher plex-orphan-watcher \
   report --state /state/watcher.db --format json
 ```
+
+When the primary process owns the BoltDB lock, the command automatically reads
+the same report through the container-internal `/report` endpoint. The health
+port should not be published outside the Docker network.
 
 After review, change only media mounts to read-write and set `DRY_RUN=false`.
 Accumulated dry-run plans are revalidated against Plex and the filesystem before

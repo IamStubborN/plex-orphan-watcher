@@ -10,7 +10,7 @@ import (
 
 type ReadinessCheck func(*http.Request) error
 
-func Handler(ready ReadinessCheck) http.Handler {
+func Handler(ready ReadinessCheck, report http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -26,13 +26,16 @@ func Handler(ready ReadinessCheck) http.Handler {
 		writer.WriteHeader(http.StatusOK)
 		_, _ = writer.Write([]byte("ready\n"))
 	})
+	if report != nil {
+		mux.Handle("GET /report", report)
+	}
 	return mux
 }
 
-func Run(ctx context.Context, address string, ready ReadinessCheck) error {
+func Run(ctx context.Context, address string, ready ReadinessCheck, report http.Handler) error {
 	server := &http.Server{
 		Addr:              address,
-		Handler:           Handler(ready),
+		Handler:           Handler(ready, report),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {
