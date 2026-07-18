@@ -1,10 +1,12 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,7 +73,8 @@ func TestProcessDueCancelsWhenItemReappears(t *testing.T) {
 	_, _ = store.Reconcile(model.Snapshot{Items: map[string]model.Item{}, SyncedAt: now.Add(time.Second)}, now.Add(time.Second), time.Millisecond)
 	executor := &fakeExecutor{}
 	plex := &fakePlex{snapshots: []model.Snapshot{{Items: map[string]model.Item{item.RatingKey: item}, SyncedAt: now.Add(2 * time.Second)}}}
-	service := New(plex, store, &fakePlanner{}, executor, time.Millisecond, false, discardLogger())
+	logger, logs := bufferedLogger()
+	service := New(plex, store, &fakePlanner{}, executor, time.Millisecond, false, logger)
 	service.now = func() time.Time { return now.Add(2 * time.Second) }
 	if err := service.ProcessDue(context.Background()); err != nil {
 		t.Fatal(err)
@@ -82,6 +85,65 @@ func TestProcessDueCancelsWhenItemReappears(t *testing.T) {
 	pending, _ := store.Pending(true)
 	if len(pending) != 0 {
 		t.Fatalf("pending = %+v", pending)
+	}
+	if output := logs.String(); !strings.Contains(output, `decision=canceled`) || !strings.Contains(output, `reason=media_part_present_in_plex`) {
+		t.Fatalf("logs = %q, want canceled resolution", output)
+	}
+}
+
+func TestProcessDueLogsWhenNothingNeedsDeletion(t *testing.T) {
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	store := openStore(t)
+	item := itemFixture()
+	_, _ = store.Reconcile(model.Snapshot{Items: map[string]model.Item{item.RatingKey: item}, SyncedAt: now}, now, time.Minute)
+	_, _ = store.Reconcile(model.Snapshot{Items: map[string]model.Item{}, SyncedAt: now.Add(time.Minute)}, now.Add(time.Minute), time.Minute)
+	planner := &fakePlanner{plan: model.DeletionPlan{PendingID: item.RatingKey, Reason: "no_orphans"}}
+	plex := &fakePlex{snapshots: []model.Snapshot{{Items: map[string]model.Item{}, SyncedAt: now.Add(3 * time.Minute)}}}
+	logger, logs := bufferedLogger()
+	service := New(plex, store, planner, &fakeExecutor{}, time.Minute, false, logger)
+	service.now = func() time.Time { return now.Add(3 * time.Minute) }
+	if err := service.ProcessDue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := store.Pending(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("pending = %+v, want none", pending)
+	}
+	if output := logs.String(); !strings.Contains(output, `decision=nothing_to_delete`) || !strings.Contains(output, `reason=no_orphans`) {
+		t.Fatalf("logs = %q, want nothing-to-delete resolution", output)
+	}
+}
+
+func TestProcessDueLogsWhenItemReappearsDuringFinalValidation(t *testing.T) {
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	store := openStore(t)
+	item := itemFixture()
+	_, _ = store.Reconcile(model.Snapshot{Items: map[string]model.Item{item.RatingKey: item}, SyncedAt: now}, now, time.Minute)
+	_, _ = store.Reconcile(model.Snapshot{Items: map[string]model.Item{}, SyncedAt: now.Add(time.Minute)}, now.Add(time.Minute), time.Minute)
+	plan := model.DeletionPlan{
+		PendingID: item.RatingKey,
+		Reason:    "orphan_sidecars",
+		Actions:   []model.Action{{Type: model.ActionDeleteFile, Path: "/data/media/Show/Episode.srt", RootPolicy: model.PolicyDelete}},
+	}
+	plex := &fakePlex{snapshots: []model.Snapshot{
+		{Items: map[string]model.Item{}, SyncedAt: now.Add(3 * time.Minute)},
+		{Items: map[string]model.Item{item.RatingKey: item}, SyncedAt: now.Add(3*time.Minute + time.Second)},
+	}}
+	executor := &fakeExecutor{}
+	logger, logs := bufferedLogger()
+	service := New(plex, store, &fakePlanner{plan: plan}, executor, time.Minute, false, logger)
+	service.now = func() time.Time { return now.Add(3 * time.Minute) }
+	if err := service.ProcessDue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if executor.calls != 0 {
+		t.Fatalf("executor calls = %d, want 0", executor.calls)
+	}
+	if output := logs.String(); !strings.Contains(output, `decision=canceled`) || !strings.Contains(output, `reason=media_part_present_in_plex`) {
+		t.Fatalf("logs = %q, want canceled resolution", output)
 	}
 }
 
@@ -159,3 +221,8 @@ func (fake *fakeExecutor) Execute(model.DeletionPlan) (cleanup.Result, error) {
 }
 
 func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+func bufferedLogger() (*slog.Logger, *bytes.Buffer) {
+	var buffer bytes.Buffer
+	return slog.New(slog.NewTextHandler(&buffer, nil)), &buffer
+}

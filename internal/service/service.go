@@ -81,6 +81,7 @@ func (service *Service) ProcessDue(ctx context.Context) error {
 	if !hasDue(pending, now) {
 		return nil
 	}
+	dueBeforeReconcile := dueByID(pending, now)
 
 	snapshot, err := service.plex.Snapshot(ctx)
 	if err != nil {
@@ -92,6 +93,12 @@ func (service *Service) ProcessDue(ctx context.Context) error {
 	pending, err = service.store.Pending(!service.dryRun)
 	if err != nil {
 		return err
+	}
+	remaining := pendingByID(pending)
+	for id, candidate := range dueBeforeReconcile {
+		if _, ok := remaining[id]; !ok {
+			service.logResolution(candidate, "canceled", "media_part_present_in_plex")
+		}
 	}
 	for _, candidate := range pending {
 		if candidate.DueAt.After(now) {
@@ -118,6 +125,7 @@ func (service *Service) ProcessDue(ctx context.Context) error {
 			if err := service.store.Complete(candidate.ID); err != nil {
 				return err
 			}
+			service.logResolution(candidate, "nothing_to_delete", plan.Reason)
 			continue
 		}
 		if service.dryRun || auditOnly(plan) {
@@ -148,6 +156,7 @@ func (service *Service) executeRevalidated(ctx context.Context, candidate model.
 		return err
 	}
 	if current == nil {
+		service.logResolution(candidate, "canceled", "media_part_present_in_plex")
 		return nil
 	}
 	revalidated, err := service.planner.Build(*current, snapshot, now)
@@ -186,6 +195,16 @@ func (service *Service) logPlan(pending model.Pending, plan model.DeletionPlan) 
 	}
 }
 
+func (service *Service) logResolution(pending model.Pending, decision, reason string) {
+	if reason == "" {
+		reason = "no_actions"
+	}
+	service.logger.Info("cleanup candidate resolved",
+		"trigger", pending.Trigger, "item_type", pending.Item.Type,
+		"rating_key", pending.Item.RatingKey, "title", pending.Item.Title,
+		"old_media_paths", pending.Item.Parts, "decision", decision, "reason", reason)
+}
+
 func hasDue(pending []model.Pending, now time.Time) bool {
 	for _, candidate := range pending {
 		if !candidate.DueAt.After(now) {
@@ -193,6 +212,24 @@ func hasDue(pending []model.Pending, now time.Time) bool {
 		}
 	}
 	return false
+}
+
+func dueByID(pending []model.Pending, now time.Time) map[string]model.Pending {
+	due := make(map[string]model.Pending)
+	for _, candidate := range pending {
+		if !candidate.DueAt.After(now) {
+			due[candidate.ID] = candidate
+		}
+	}
+	return due
+}
+
+func pendingByID(pending []model.Pending) map[string]model.Pending {
+	byID := make(map[string]model.Pending, len(pending))
+	for _, candidate := range pending {
+		byID[candidate.ID] = candidate
+	}
+	return byID
 }
 
 func auditOnly(plan model.DeletionPlan) bool {
