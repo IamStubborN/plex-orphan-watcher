@@ -33,13 +33,15 @@ type Service struct {
 	dryRun      bool
 	logger      *slog.Logger
 	now         func() time.Time
+	startedAt   time.Time
 }
 
 func New(plex Plex, store *state.Store, planner Planner, executor Executor, settleDelay time.Duration, dryRun bool, logger *slog.Logger) *Service {
+	now := func() time.Time { return time.Now().UTC() }
 	return &Service{
 		plex: plex, store: store, planner: planner, executor: executor,
 		settleDelay: settleDelay, dryRun: dryRun, logger: logger,
-		now: func() time.Time { return time.Now().UTC() },
+		now: now, startedAt: now(),
 	}
 }
 
@@ -78,10 +80,10 @@ func (service *Service) ProcessDue(ctx context.Context) error {
 		return fmt.Errorf("load pending cleanup: %w", err)
 	}
 	now := service.now()
-	if !hasDue(pending, now) {
+	if !service.hasDue(pending, now) {
 		return nil
 	}
-	dueBeforeReconcile := dueByID(pending, now)
+	dueBeforeReconcile := service.dueByID(pending, now)
 
 	snapshot, err := service.plex.Snapshot(ctx)
 	if err != nil {
@@ -101,7 +103,7 @@ func (service *Service) ProcessDue(ctx context.Context) error {
 		}
 	}
 	for _, candidate := range pending {
-		if candidate.DueAt.After(now) {
+		if !service.isDue(candidate, now) {
 			continue
 		}
 		plan, err := service.planner.Build(candidate, snapshot, now)
@@ -205,19 +207,30 @@ func (service *Service) logResolution(pending model.Pending, decision, reason st
 		"old_media_paths", pending.Item.Parts, "decision", decision, "reason", reason)
 }
 
-func hasDue(pending []model.Pending, now time.Time) bool {
+// isDue skips audit-only plans this process already made: a live watcher
+// cannot act on them, so they are planned again only after a restart or a
+// Plex inventory change resets them to waiting.
+func (service *Service) isDue(candidate model.Pending, now time.Time) bool {
+	if candidate.DueAt.After(now) {
+		return false
+	}
+	return candidate.Status != model.PendingDryRun || !auditOnly(candidate.Plan) ||
+		candidate.Plan.CreatedAt.Before(service.startedAt)
+}
+
+func (service *Service) hasDue(pending []model.Pending, now time.Time) bool {
 	for _, candidate := range pending {
-		if !candidate.DueAt.After(now) {
+		if service.isDue(candidate, now) {
 			return true
 		}
 	}
 	return false
 }
 
-func dueByID(pending []model.Pending, now time.Time) map[string]model.Pending {
+func (service *Service) dueByID(pending []model.Pending, now time.Time) map[string]model.Pending {
 	due := make(map[string]model.Pending)
 	for _, candidate := range pending {
-		if !candidate.DueAt.After(now) {
+		if service.isDue(candidate, now) {
 			due[candidate.ID] = candidate
 		}
 	}

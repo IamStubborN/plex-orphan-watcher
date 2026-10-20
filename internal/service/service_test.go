@@ -176,6 +176,79 @@ func TestProcessDueReschedulesWhileVideoStillExists(t *testing.T) {
 	}
 }
 
+func TestProcessDueDoesNotReplanAuditOnlyPlanUntilRestart(t *testing.T) {
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	store := openStore(t)
+	item := removedItem(t, store, now)
+	plan := model.DeletionPlan{PendingID: item.RatingKey, Actions: []model.Action{{Type: model.ActionDeleteTree, Path: "/data/torrents/Show", RootPolicy: model.PolicyAudit}}}
+	plex := &fakePlex{snapshots: []model.Snapshot{{Items: map[string]model.Item{}, SyncedAt: now.Add(3 * time.Minute)}}}
+	executor := &fakeExecutor{}
+	tick := func(service *Service, minute int) {
+		t.Helper()
+		service.now = func() time.Time { return now.Add(time.Duration(minute) * time.Minute) }
+		if err := service.ProcessDue(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	service := New(plex, store, &fakePlanner{plan: plan}, executor, time.Minute, false, discardLogger())
+	service.startedAt = now.Add(2 * time.Minute)
+	for minute := 3; minute <= 5; minute++ {
+		tick(service, minute)
+	}
+	if plex.calls != 1 || executor.calls != 0 {
+		t.Fatalf("snapshot calls = %d, executor calls = %d; want 1 and 0", plex.calls, executor.calls)
+	}
+	pending, _ := store.Pending(true)
+	if len(pending) != 1 || pending[0].Status != model.PendingDryRun {
+		t.Fatalf("pending = %+v", pending)
+	}
+
+	restarted := New(plex, store, &fakePlanner{plan: plan}, executor, time.Minute, false, discardLogger())
+	restarted.startedAt = now.Add(6 * time.Minute)
+	tick(restarted, 6)
+	tick(restarted, 7)
+	if plex.calls != 2 || executor.calls != 0 {
+		t.Fatalf("after restart: snapshot calls = %d, executor calls = %d; want 2 and 0", plex.calls, executor.calls)
+	}
+}
+
+func TestProcessDueExecutesEarlierDryRunPlanWhenLive(t *testing.T) {
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	store := openStore(t)
+	item := removedItem(t, store, now)
+	plan := model.DeletionPlan{PendingID: item.RatingKey, Actions: []model.Action{{Type: model.ActionDeleteFile, Path: "/data/media/Show/Episode.srt", RootPolicy: model.PolicyDelete}}}
+	plex := &fakePlex{snapshots: []model.Snapshot{{Items: map[string]model.Item{}, SyncedAt: now.Add(3 * time.Minute)}}}
+	dryRun := New(plex, store, &fakePlanner{plan: plan}, &fakeExecutor{}, time.Minute, true, discardLogger())
+	dryRun.now = func() time.Time { return now.Add(3 * time.Minute) }
+	if err := dryRun.ProcessDue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := &fakeExecutor{}
+	live := New(plex, store, &fakePlanner{plan: plan}, executor, time.Minute, false, discardLogger())
+	live.startedAt = now.Add(4 * time.Minute)
+	live.now = func() time.Time { return now.Add(4 * time.Minute) }
+	if err := live.ProcessDue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if executor.calls != 1 {
+		t.Fatalf("executor calls = %d, want 1", executor.calls)
+	}
+}
+
+func removedItem(t *testing.T, store *state.Store, now time.Time) model.Item {
+	t.Helper()
+	item := itemFixture()
+	if _, err := store.Reconcile(model.Snapshot{Items: map[string]model.Item{item.RatingKey: item}, SyncedAt: now}, now, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Reconcile(model.Snapshot{Items: map[string]model.Item{}, SyncedAt: now.Add(time.Minute)}, now.Add(time.Minute), time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	return item
+}
+
 func openStore(t *testing.T) *state.Store {
 	t.Helper()
 	store, err := state.Open(filepath.Join(t.TempDir(), "watcher.db"))
@@ -193,9 +266,11 @@ func itemFixture() model.Item {
 type fakePlex struct {
 	snapshots []model.Snapshot
 	index     int
+	calls     int
 }
 
 func (fake *fakePlex) Snapshot(context.Context) (model.Snapshot, error) {
+	fake.calls++
 	value := fake.snapshots[fake.index]
 	if fake.index < len(fake.snapshots)-1 {
 		fake.index++
@@ -207,8 +282,10 @@ type fakePlanner struct {
 	plan model.DeletionPlan
 }
 
-func (fake *fakePlanner) Build(model.Pending, model.Snapshot, time.Time) (model.DeletionPlan, error) {
-	return fake.plan, nil
+func (fake *fakePlanner) Build(_ model.Pending, _ model.Snapshot, now time.Time) (model.DeletionPlan, error) {
+	plan := fake.plan
+	plan.CreatedAt = now
+	return plan, nil
 }
 
 type fakeExecutor struct {
